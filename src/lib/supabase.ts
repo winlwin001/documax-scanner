@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
+// Supabase client initialization - triggers Vercel redeploy to load env variables
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://mock-project-url.supabase.co';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'mock-anon-key';
 
