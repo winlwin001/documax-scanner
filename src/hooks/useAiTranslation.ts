@@ -1,0 +1,281 @@
+import { useState } from 'react';
+import { useSubscription } from '../context/SubscriptionContext';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
+
+interface TranslationOptions {
+  sourceLang?: string;
+  targetLang: string;
+  domain?: string; // 'general' | 'legal' | 'medical' | 'business' etc.
+  glossary?: Record<string, string>;
+}
+
+export const useAiTranslation = () => {
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const { incrementUsage, checkLimit } = useSubscription();
+
+  // Retrieve local Gemini Key (only as a fallback for local offline testing)
+  const getLocalApiKey = (): string => {
+    return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
+  };
+
+  const isGeminiConfigured = (): boolean => {
+    return isSupabaseConfigured || getLocalApiKey() !== '';
+  };
+
+  // 1. Translate Plain Text
+  const translateText = async (text: string, options: TranslationOptions): Promise<string> => {
+    if (!checkLimit('ocrRuns')) {
+      throw new Error('AI translation monthly limit reached. Please upgrade.');
+    }
+
+    setLoading(true);
+    setProgress(20);
+
+    const { sourceLang = 'auto', targetLang, domain = 'general', glossary = {} } = options;
+
+    let glossaryInstruction = '';
+    if (Object.keys(glossary).length > 0) {
+      glossaryInstruction = `Strictly follow this glossary for terminology mapping:\n${JSON.stringify(glossary)}\n`;
+    }
+
+    const prompt = `
+      You are an expert professional translator. 
+      Translate the following text from ${sourceLang === 'auto' ? 'automatically detected language' : sourceLang} into ${targetLang}.
+      
+      Domain/Context: ${domain} (Use terminology and tone appropriate for this domain).
+      ${glossaryInstruction}
+      
+      Preserve the original formatting (paragraphs, lists, indentations, line breaks, markdown, HTML tags) exactly as they are. Do not translate code blocks, HTML tags, or markdown formatting characters.
+      
+      Text to translate:
+      """
+      ${text}
+      """
+    `;
+
+    try {
+      setProgress(50);
+      let translatedText = '';
+
+      if (isSupabaseConfigured) {
+        // 1. Secure Production Mode: Call backend serverless function (API Key remains safe on server)
+        const { data, error } = await supabase.functions.invoke('gemini-proxy', {
+          body: {
+            action: 'translate_text',
+            payload: {
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.3 }
+            }
+          }
+        });
+
+        if (error) throw error;
+        translatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      } else {
+        // 2. Local Fallback Mode (for offline testing / local key config)
+        const localKey = getLocalApiKey();
+        if (!localKey) {
+          throw new Error('Backend is not configured and no local Gemini Key was found.');
+        }
+
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${localKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.3 }
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error?.message || 'Gemini API call failed.');
+        }
+
+        const data = await response.json();
+        translatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      }
+
+      setProgress(100);
+      incrementUsage('ocrRuns');
+      return translatedText;
+    } catch (error: any) {
+      console.error('Translation Error:', error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 2. Multimodal Image Translation
+  const translateImage = async (imageBlob: Blob, targetLang: string): Promise<{ translatedText: string; erasedImage: string }> => {
+    setLoading(true);
+    setProgress(20);
+
+    try {
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(imageBlob);
+      });
+      const base64DataUrl = await base64Promise;
+      const base64Content = base64DataUrl.split(',')[1];
+
+      setProgress(40);
+
+      const prompt = `
+        Analyze this image. Locate all text elements and return a JSON array containing their bounding boxes and their translation into "${targetLang}".
+        
+        The JSON output must be a list of objects, each having:
+        - "text": The original text.
+        - "translatedText": The translated text.
+        - "box": [ymin, xmin, ymax, xmax] as integers representing percentages (0 to 100) of the image height and width.
+        - "fontSize": estimated font size in pixels relative to a standard image size.
+        - "color": The text color (hex code).
+        - "bgColor": The background color behind the text (hex code, for erasing).
+
+        Ensure the response is ONLY the raw JSON array, without markdown blocks.
+      `;
+
+      let segments = [];
+
+      if (isSupabaseConfigured) {
+        // Secure server-side call
+        const { data, error } = await supabase.functions.invoke('gemini-proxy', {
+          body: {
+            action: 'translate_image',
+            payload: {
+              mimeType: 'image/jpeg',
+              data: base64Content,
+              prompt,
+              generationConfig: {
+                responseMimeType: 'application/json',
+                temperature: 0.1,
+              }
+            }
+          }
+        });
+
+        if (error) throw error;
+        const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+        segments = JSON.parse(jsonText);
+      } else {
+        // Local fallback
+        const localKey = getLocalApiKey();
+        if (!localKey) {
+          throw new Error('Backend is not configured and no local Gemini Key was found.');
+        }
+
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${localKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    { inlineData: { mimeType: 'image/jpeg', data: base64Content } },
+                    { text: prompt }
+                  ]
+                }
+              ],
+              generationConfig: {
+                responseMimeType: 'application/json',
+                temperature: 0.1,
+              }
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error?.message || 'Gemini API call failed.');
+        }
+
+        const data = await response.json();
+        const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+        segments = JSON.parse(jsonText);
+      }
+
+      setProgress(80);
+
+      // Recreate image layout
+      const img = new Image();
+      img.src = base64DataUrl;
+      await new Promise((resolve) => img.onload = resolve);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not create 2D canvas.');
+
+      ctx.drawImage(img, 0, 0);
+
+      for (const seg of segments) {
+        const [ymin, xmin, ymax, xmax] = seg.box;
+        const x = (xmin / 100) * canvas.width;
+        const y = (ymin / 100) * canvas.height;
+        const w = ((xmax - xmin) / 100) * canvas.width;
+        const h = ((ymax - ymin) / 100) * canvas.height;
+
+        ctx.fillStyle = seg.bgColor || '#ffffff';
+        ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+
+        ctx.fillStyle = seg.color || '#000000';
+        const fontSize = Math.max(12, (h * 0.75));
+        ctx.font = `bold ${fontSize}px "Outfit", sans-serif`;
+        ctx.textBaseline = 'top';
+        
+        wrapText(ctx, seg.translatedText, x + 2, y + 2, w, fontSize * 1.2);
+      }
+
+      setProgress(100);
+      incrementUsage('ocrRuns');
+
+      return {
+        translatedText: segments.map((s: any) => s.translatedText).join('\n'),
+        erasedImage: canvas.toDataURL('image/jpeg', 0.9)
+      };
+
+    } catch (error) {
+      console.error('Image Translation Error:', error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return {
+    translateText,
+    translateImage,
+    isGeminiConfigured,
+    loading,
+    progress,
+  };
+};
+
+const wrapText = (ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
+  const words = text.split(' ');
+  let line = '';
+  let currentY = y;
+
+  for (let n = 0; n < words.length; n++) {
+    const testLine = line + words[n] + ' ';
+    const metrics = ctx.measureText(testLine);
+    const testWidth = metrics.width;
+    if (testWidth > maxWidth && n > 0) {
+      ctx.fillText(line, x, currentY);
+      line = words[n] + ' ';
+      currentY += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  ctx.fillText(line, x, currentY);
+};

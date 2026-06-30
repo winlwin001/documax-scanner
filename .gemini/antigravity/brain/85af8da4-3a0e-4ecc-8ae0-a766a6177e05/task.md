@@ -1,0 +1,34 @@
+# Task List - Document Management Application
+
+- `[x]` Phase 1: Foundation & Project Setup
+    - `[x]` Run Vite project initialization with React and TypeScript
+    - `[x]` Install Tailwind CSS v4 (using `@tailwindcss/vite`)
+    - `[x]` Set up PWA configuration with `vite-plugin-pwa`
+    - `[x]` Configure Capacitor (`@capacitor/core`, `@capacitor/cli`)
+    - `[x]` Build core layout (Sidebar, Navbar, Theme, Mobile Nav)
+- `[x]` Phase 2: Database Schema & Authentication
+    - `[x]` Create SQL schema migrations (profiles, subscriptions, documents, pages, ocr_results, audit_logs)
+    - `[x]` Set up Supabase Client and Auth Context (Google, Apple, Guest, Email)
+    - `[x]` Build Authentication & Registration UI
+- `[x]` Phase 3: File Manager & Cloud Sync
+    - `[x]` Build File Manager Dashboard (grid/list view, drag-and-drop, upload progress)
+    - `[x]` Implement Local Storage (IndexedDB) for offline/guest mode
+    - `[x]` Implement Google Drive OAuth 2.0 and sync service
+- `[x]` Phase 4: Document Scanner & OCR Module
+    - `[x]` Set up camera capture with custom UI
+    - `[x]` Integrate OpenCV.js for edge detection and perspective warping
+    - `[x]` Add image enhancement filters (grayscale, B&W, contrast)
+    - `[x]` Set up OCR engine: local Tesseract.js and Google Vision API fallback
+- `[x]` Phase 5: PDF & Image Tools
+    - `[x]` Implement PDF operations (merge, split, compress, watermark, protect, sign)
+    - `[x]` Build Image & Text Converters (Image-to-PDF, PDF-to-Image, Text-to-PDF/DOCX, HEIC converter)
+- `[x]` Phase 6: Grid Editor & Scanner Tools
+    - `[x]` Build spreadsheet editor (XLSX/CSV import/export/edit)
+    - `[x]` Implement QR & Barcode scanner and generator
+- `[x]` Phase 7: Subscription Billing & Admin
+    - `[x]` Create Stripe Integration (mock mode + production SDK)
+    - `[x]` Implement feature gating based on tiers (Free, Pro, Business)
+    - `[x]` Build Admin Dashboard & Analytics
+- `[x]` Phase 8: Verification & Polish
+    - `[x]` Run unit tests and type checks
+    - `[x]` Create walkthrough.md and demo instructions
