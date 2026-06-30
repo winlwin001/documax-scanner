@@ -167,3 +167,40 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- Create storage bucket for documents if not exists
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('documents', 'documents', false)
+ON CONFLICT (id) DO NOTHING;
+
+-- Enable RLS on storage.objects
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- Allow users to upload files to their own folder
+CREATE POLICY "Allow users to upload files to their own folder" ON storage.objects
+    FOR INSERT WITH CHECK (
+        bucket_id = 'documents' 
+        AND auth.uid()::text = (storage.foldername(name))[1]
+    );
+
+-- Allow users to view their own files
+CREATE POLICY "Allow users to view their own files" ON storage.objects
+    FOR SELECT USING (
+        bucket_id = 'documents' 
+        AND auth.uid()::text = (storage.foldername(name))[1]
+    );
+
+-- Allow users to update their own files
+CREATE POLICY "Allow users to update their own files" ON storage.objects
+    FOR UPDATE USING (
+        bucket_id = 'documents' 
+        AND auth.uid()::text = (storage.foldername(name))[1]
+    );
+
+-- Allow users to delete their own files
+CREATE POLICY "Allow users to delete their own files" ON storage.objects
+    FOR DELETE USING (
+        bucket_id = 'documents' 
+        AND auth.uid()::text = (storage.foldername(name))[1]
+    );
+
