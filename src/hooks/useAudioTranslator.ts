@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useSubscription } from '../context/SubscriptionContext';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 interface AudioTranslationOptions {
   targetLang: string;
@@ -12,7 +11,7 @@ export const useAudioTranslator = () => {
   const [progress, setProgress] = useState(0);
   const { incrementUsage, checkLimit } = useSubscription();
 
-  const getLocalApiKey = (): string => {
+  const getApiKey = (): string => {
     return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
   };
 
@@ -20,6 +19,11 @@ export const useAudioTranslator = () => {
     audioFile: File,
     options: AudioTranslationOptions
   ): Promise<{ transcript: string; subtitles: string }> => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      throw new Error('Gemini API Key is not configured. Please add it in Settings.');
+    }
+
     if (!checkLimit('ocrRuns')) {
       throw new Error('AI operations monthly limit reached. Please upgrade.');
     }
@@ -83,67 +87,41 @@ export const useAudioTranslator = () => {
         `;
       }
 
-      setProgress(60);
-      let result = { transcript: '', subtitles: '' };
+      setProgress(65);
 
-      if (isSupabaseConfigured) {
-        // Secure Server-side Call
-        const { data, error } = await supabase.functions.invoke('gemini-proxy', {
-          body: {
-            action: 'translate_audio',
-            payload: {
-              mimeType,
-              data: base64Content,
-              prompt,
-              generationConfig: {
-                responseMimeType: 'application/json',
-                temperature: 0.2,
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { inlineData: { mimeType, data: base64Content } },
+                  { text: prompt }
+                ]
               }
+            ],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.2,
             }
-          }
-        });
-
-        if (error) throw error;
-        const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-        result = JSON.parse(jsonText);
-      } else {
-        // Local fallback
-        const localKey = getLocalApiKey();
-        if (!localKey) {
-          throw new Error('Backend is not configured and no local Gemini Key was found.');
+          }),
         }
+      );
 
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${localKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    { inlineData: { mimeType, data: base64Content } },
-                    { text: prompt }
-                  ]
-                }
-              ],
-              generationConfig: {
-                responseMimeType: 'application/json',
-                temperature: 0.2,
-              }
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error?.message || 'Gemini Audio transcription failed.');
-        }
-
-        const data = await response.json();
-        const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-        result = JSON.parse(jsonText);
+      setProgress(85);
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error?.message || 'Gemini Audio transcription failed.');
       }
+
+      const data = await response.json();
+      const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+      const result = JSON.parse(jsonText);
 
       setProgress(100);
       incrementUsage('ocrRuns');

@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useSubscription } from '../context/SubscriptionContext';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 interface TranslationOptions {
   sourceLang?: string;
@@ -14,17 +13,22 @@ export const useAiTranslation = () => {
   const [progress, setProgress] = useState(0);
   const { incrementUsage, checkLimit } = useSubscription();
 
-  // Retrieve local Gemini Key (only as a fallback for local offline testing)
-  const getLocalApiKey = (): string => {
+  // Retrieve Gemini API Key from environment or localStorage (saves key securely on client)
+  const getApiKey = (): string => {
     return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
   };
 
   const isGeminiConfigured = (): boolean => {
-    return isSupabaseConfigured || getLocalApiKey() !== '';
+    return getApiKey() !== '';
   };
 
   // 1. Translate Plain Text
   const translateText = async (text: string, options: TranslationOptions): Promise<string> => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      throw new Error('Gemini API Key is not configured. Please add it in Settings.');
+    }
+
     if (!checkLimit('ocrRuns')) {
       throw new Error('AI translation monthly limit reached. Please upgrade.');
     }
@@ -56,55 +60,36 @@ export const useAiTranslation = () => {
 
     try {
       setProgress(50);
-      let translatedText = '';
-
-      if (isSupabaseConfigured) {
-        // 1. Secure Production Mode: Call backend serverless function (API Key remains safe on server)
-        const { data, error } = await supabase.functions.invoke('gemini-proxy', {
-          body: {
-            action: 'translate_text',
-            payload: {
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { temperature: 0.3 }
-            }
-          }
-        });
-
-        if (error) throw error;
-        translatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      } else {
-        // 2. Local Fallback Mode (for offline testing / local key config)
-        const localKey = getLocalApiKey();
-        if (!localKey) {
-          throw new Error('Backend is not configured and no local Gemini Key was found.');
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.3,
+            },
+          }),
         }
+      );
 
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${localKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { temperature: 0.3 }
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error?.message || 'Gemini API call failed.');
-        }
-
-        const data = await response.json();
-        translatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      setProgress(80);
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error?.message || 'Gemini API call failed.');
       }
 
+      const data = await response.json();
+      const translatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      
       setProgress(100);
       incrementUsage('ocrRuns');
       return translatedText;
     } catch (error: any) {
-      console.error('Translation Error:', error);
+      console.error('Gemini Translation Error:', error);
       throw error;
     } finally {
       setLoading(false);
@@ -113,6 +98,11 @@ export const useAiTranslation = () => {
 
   // 2. Multimodal Image Translation
   const translateImage = async (imageBlob: Blob, targetLang: string): Promise<{ translatedText: string; erasedImage: string }> => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      throw new Error('Gemini API Key is not configured. Please add it in Settings.');
+    }
+
     setLoading(true);
     setProgress(20);
 
@@ -141,70 +131,42 @@ export const useAiTranslation = () => {
         Ensure the response is ONLY the raw JSON array, without markdown blocks.
       `;
 
-      let segments = [];
-
-      if (isSupabaseConfigured) {
-        // Secure server-side call
-        const { data, error } = await supabase.functions.invoke('gemini-proxy', {
-          body: {
-            action: 'translate_image',
-            payload: {
-              mimeType: 'image/jpeg',
-              data: base64Content,
-              prompt,
-              generationConfig: {
-                responseMimeType: 'application/json',
-                temperature: 0.1,
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { inlineData: { mimeType: 'image/jpeg', data: base64Content } },
+                  { text: prompt }
+                ]
               }
+            ],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.1,
             }
-          }
-        });
-
-        if (error) throw error;
-        const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-        segments = JSON.parse(jsonText);
-      } else {
-        // Local fallback
-        const localKey = getLocalApiKey();
-        if (!localKey) {
-          throw new Error('Backend is not configured and no local Gemini Key was found.');
+          }),
         }
+      );
 
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${localKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    { inlineData: { mimeType: 'image/jpeg', data: base64Content } },
-                    { text: prompt }
-                  ]
-                }
-              ],
-              generationConfig: {
-                responseMimeType: 'application/json',
-                temperature: 0.1,
-              }
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error?.message || 'Gemini API call failed.');
-        }
-
-        const data = await response.json();
-        const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-        segments = JSON.parse(jsonText);
+      setProgress(70);
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error?.message || 'Gemini Multimodal call failed.');
       }
 
-      setProgress(80);
+      const data = await response.json();
+      const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+      const segments = JSON.parse(jsonText);
 
-      // Recreate image layout
+      setProgress(85);
+
       const img = new Image();
       img.src = base64DataUrl;
       await new Promise((resolve) => img.onload = resolve);
@@ -213,7 +175,7 @@ export const useAiTranslation = () => {
       canvas.width = img.naturalWidth;
       canvas.height = img.naturalHeight;
       const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Could not create 2D canvas.');
+      if (!ctx) throw new Error('Could not create 2D canvas context.');
 
       ctx.drawImage(img, 0, 0);
 

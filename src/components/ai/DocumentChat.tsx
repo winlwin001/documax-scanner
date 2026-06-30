@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, MessageSquare } from 'lucide-react';
-import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -23,7 +22,7 @@ export const DocumentChat: React.FC<DocumentChatProps> = ({ documentText, docume
   const [loading, setLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  const getLocalApiKey = (): string => {
+  const getApiKey = (): string => {
     return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
   };
 
@@ -35,6 +34,19 @@ export const DocumentChat: React.FC<DocumentChatProps> = ({ documentText, docume
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setInputValue('');
     setLoading(true);
+
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: 'Error: Gemini API Key is not configured. Please add it in Settings.',
+        },
+      ]);
+      setLoading(false);
+      return;
+    }
 
     const contextPrompt = `
       You are a helpful AI document assistant. You have access to the document "${documentName}".
@@ -67,43 +79,24 @@ export const DocumentChat: React.FC<DocumentChatProps> = ({ documentText, docume
     });
 
     try {
-      let botResponse = '';
-
-      if (isSupabaseConfigured) {
-        // Secure Server-side Call
-        const { data, error } = await supabase.functions.invoke('gemini-proxy', {
-          body: {
-            action: 'chat',
-            payload: { contents }
-          }
-        });
-
-        if (error) throw error;
-        botResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response received.';
-      } else {
-        // Local fallback
-        const localKey = getLocalApiKey();
-        if (!localKey) {
-          throw new Error('Backend is not configured and no local Gemini Key was found.');
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ contents }),
         }
+      );
 
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${localKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents }),
-          }
-        );
-
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error?.message || 'Gemini call failed.');
-        }
-
-        const data = await response.json();
-        botResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response received.';
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error?.message || 'Gemini call failed.');
       }
+
+      const data = await response.json();
+      const botResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response received.';
 
       setMessages(prev => [...prev, { role: 'assistant', content: botResponse }]);
     } catch (err: any) {
