@@ -14,7 +14,7 @@ export const loadOpenCV = (): Promise<any> => {
 
     // Create script element
     const script = document.createElement('script');
-    script.src = 'https://docs.opencv.org/4.5.4/opencv.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.3/dist/opencv.js';
     script.async = true;
 
     script.onload = () => {
@@ -23,7 +23,17 @@ export const loadOpenCV = (): Promise<any> => {
         if ((window as any).cv && (window as any).cv.Mat) {
           resolve((window as any).cv);
         } else {
-          setTimeout(checkCV, 50);
+          // If Module is defined but cv is not initialized, check for onRuntimeInitialized
+          const Module = (window as any).Module;
+          if (Module) {
+            const originalCallback = Module.onRuntimeInitialized;
+            Module.onRuntimeInitialized = () => {
+              if (originalCallback) originalCallback();
+              resolve((window as any).cv);
+            };
+          } else {
+            setTimeout(checkCV, 50);
+          }
         }
       };
       checkCV();

@@ -47,12 +47,14 @@ export const ScannerView: React.FC = () => {
   const [docName, setDocName] = useState('Scanned Document');
   const [isSaving, setIsSaving] = useState(false);
 
-  // Load OpenCV on mount
+  // Load OpenCV on demand when crop step starts
   useEffect(() => {
-    loadOpenCV()
-      .then(() => setIsOpenCvLoaded(true))
-      .catch(err => console.error('Failed to load OpenCV.js:', err));
-  }, []);
+    if (step === 'crop' && !isOpenCvLoaded) {
+      loadOpenCV()
+        .then(() => setIsOpenCvLoaded(true))
+        .catch(err => console.error('Failed to load OpenCV.js:', err));
+    }
+  }, [step, isOpenCvLoaded]);
 
   // Start Camera
   const startCamera = async () => {
