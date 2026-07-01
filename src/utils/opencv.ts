@@ -23,17 +23,7 @@ export const loadOpenCV = (): Promise<any> => {
         if ((window as any).cv && (window as any).cv.Mat) {
           resolve((window as any).cv);
         } else {
-          // If Module is defined but cv is not initialized, check for onRuntimeInitialized
-          const Module = (window as any).Module;
-          if (Module) {
-            const originalCallback = Module.onRuntimeInitialized;
-            Module.onRuntimeInitialized = () => {
-              if (originalCallback) originalCallback();
-              resolve((window as any).cv);
-            };
-          } else {
-            setTimeout(checkCV, 50);
-          }
+          setTimeout(checkCV, 50);
         }
       };
       checkCV();
