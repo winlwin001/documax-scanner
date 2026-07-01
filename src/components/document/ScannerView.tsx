@@ -46,6 +46,7 @@ export const ScannerView: React.FC = () => {
   // Save State
   const [docName, setDocName] = useState('Scanned Document');
   const [isSaving, setIsSaving] = useState(false);
+  const [isCropping, setIsCropping] = useState(false);
 
   // Load OpenCV on demand when crop step starts
   useEffect(() => {
@@ -204,7 +205,8 @@ export const ScannerView: React.FC = () => {
 
   // Perform Crop (Warp Perspective)
   const applyCrop = async () => {
-    if (!capturedImage) return;
+    if (!capturedImage || isCropping) return;
+    setIsCropping(true);
 
     const img = new Image();
     img.src = capturedImage;
@@ -220,30 +222,45 @@ export const ScannerView: React.FC = () => {
     const destWidth = 800;
     const destHeight = 1130;
 
-    try {
-      let warpedCanvas: HTMLCanvasElement;
-      if (isOpenCvLoaded) {
-        warpedCanvas = await warpPerspective(canvas, quadPoints, destWidth, destHeight);
-      } else {
-        // Fallback: simple rectangular crop (approximate)
-        warpedCanvas = document.createElement('canvas');
-        warpedCanvas.width = destWidth;
-        warpedCanvas.height = destHeight;
-        const wCtx = warpedCanvas.getContext('2d');
-        wCtx?.drawImage(img, 0, 0, destWidth, destHeight);
-      }
+    // Wrap in setTimeout to yield the thread and prevent page hangs
+    setTimeout(async () => {
+      try {
+        let warpedCanvas: HTMLCanvasElement;
+        if (isOpenCvLoaded) {
+          warpedCanvas = await warpPerspective(canvas, quadPoints, destWidth, destHeight);
+        } else {
+          // Fallback: real rectangular crop using the bounding box of the user's selected quadPoints
+          const minX = Math.max(0, Math.min(quadPoints.topLeft.x, quadPoints.bottomLeft.x));
+          const minY = Math.max(0, Math.min(quadPoints.topLeft.y, quadPoints.topRight.y));
+          const maxX = Math.min(img.naturalWidth, Math.max(quadPoints.topRight.x, quadPoints.bottomRight.x));
+          const maxY = Math.min(img.naturalHeight, Math.max(quadPoints.bottomLeft.y, quadPoints.bottomRight.y));
 
-      setFlatCanvas(warpedCanvas);
-      
-      // Apply default enhancement filter
-      const filtered = applyFilter(warpedCanvas, selectedFilter);
-      setFilteredImage(filtered.toDataURL('image/jpeg'));
-      
-      setStep('filter');
-    } catch (err) {
-      console.error('Warp perspective failed:', err);
-      alert('Failed to warp document perspective.');
-    }
+          const cropW = Math.max(10, maxX - minX);
+          const cropH = Math.max(10, maxY - minY);
+
+          warpedCanvas = document.createElement('canvas');
+          warpedCanvas.width = destWidth;
+          warpedCanvas.height = destHeight;
+          const wCtx = warpedCanvas.getContext('2d');
+          if (wCtx) {
+            wCtx.drawImage(img, minX, minY, cropW, cropH, 0, 0, destWidth, destHeight);
+          }
+        }
+
+        setFlatCanvas(warpedCanvas);
+        
+        // Apply default enhancement filter
+        const filtered = applyFilter(warpedCanvas, selectedFilter);
+        setFilteredImage(filtered.toDataURL('image/jpeg'));
+        
+        setStep('filter');
+      } catch (err) {
+        console.error('Warp perspective failed:', err);
+        alert('Failed to warp document perspective.');
+      } finally {
+        setIsCropping(false);
+      }
+    }, 50);
   };
 
   // Handle Filter Change
@@ -459,10 +476,20 @@ export const ScannerView: React.FC = () => {
             </button>
             <button
               onClick={applyCrop}
-              className="flex-1 py-2.5 bg-primary text-on-primary hover:bg-primary/90 rounded-full text-sm font-semibold transition flex items-center justify-center gap-2 shadow-sm"
+              disabled={isCropping}
+              className="flex-1 py-2.5 bg-primary text-on-primary hover:bg-primary/95 disabled:opacity-50 rounded-full text-sm font-semibold transition flex items-center justify-center gap-2 shadow-sm"
             >
-              <Crop size={14} />
-              Crop & Flatten
+              {isCropping ? (
+                <>
+                  <RotateCw size={14} className="animate-spin" />
+                  Cropping...
+                </>
+              ) : (
+                <>
+                  <Crop size={14} />
+                  Crop & Flatten
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -633,6 +660,7 @@ export const ScannerView: React.FC = () => {
               setFilteredImage('');
               setExtractedText('');
               setDocName('Scanned Document');
+              setFlatCanvas(null);
             }}
             className="py-2 px-6 border border-outline/30 hover:bg-surface-variant/30 text-on-surface text-xs font-semibold rounded-xl transition"
           >
