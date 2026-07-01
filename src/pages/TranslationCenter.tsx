@@ -28,6 +28,19 @@ export const TranslationCenter: React.FC = () => {
   const [audioTranscript, setAudioTranscript] = useState('');
   const [audioSubtitles, setAudioSubtitles] = useState('');
   const [audioTargetLang, setAudioTargetLang] = useState('English');
+  const [burnSubtitles, setBurnSubtitles] = useState(false);
+  const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
+  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
+  const [videoProgress, setVideoProgress] = useState(0);
+
+  // Revoke object URL on unmount/update to prevent memory leaks
+  React.useEffect(() => {
+    return () => {
+      if (processedVideoUrl) {
+        URL.revokeObjectURL(processedVideoUrl);
+      }
+    };
+  }, [processedVideoUrl]);
 
   // Handle Text Translation
   const handleTextTranslate = async () => {
@@ -56,6 +69,175 @@ export const TranslationCenter: React.FC = () => {
     }
   };
 
+  const parseSRT = (srtText: string) => {
+    const segments: { start: number; end: number; text: string }[] = [];
+    const blocks = srtText.trim().split(/\n\s*\n/);
+    for (const block of blocks) {
+      const lines = block.split('\n');
+      if (lines.length >= 3) {
+        const timeMatch = lines[1].match(/(\d+):(\d+):(\d+),(\d+)\s*-->\s*(\d+):(\d+):(\d+),(\d+)/);
+        if (timeMatch) {
+          const start = parseInt(timeMatch[1], 10) * 3600 +
+                        parseInt(timeMatch[2], 10) * 60 +
+                        parseInt(timeMatch[3], 10) +
+                        parseInt(timeMatch[4], 10) / 1000;
+          const end = parseInt(timeMatch[5], 10) * 3600 +
+                      parseInt(timeMatch[6], 10) * 60 +
+                      parseInt(timeMatch[7], 10) +
+                      parseInt(timeMatch[8], 10) / 1000;
+          const text = lines.slice(2).join('\n').trim();
+          segments.push({ start, end, text });
+        }
+      }
+    }
+    return segments;
+  };
+
+  const processVideoWithSubtitles = async (file: File, srtText: string) => {
+    setIsProcessingVideo(true);
+    setVideoProgress(0);
+
+    const video = document.createElement('video');
+    video.src = URL.createObjectURL(file);
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = 'anonymous';
+
+    await new Promise((resolve) => {
+      video.onloadedmetadata = resolve;
+    });
+
+    const canvas = document.createElement('canvas');
+    const maxDim = 720;
+    let width = video.videoWidth || 640;
+    let height = video.videoHeight || 360;
+    if (width > maxDim || height > maxDim) {
+      if (width > height) {
+        height = Math.round((height * maxDim) / width);
+        width = maxDim;
+      } else {
+        width = Math.round((width * maxDim) / height);
+        height = maxDim;
+      }
+    }
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas context not available');
+    }
+
+    const segments = parseSRT(srtText);
+
+    // Capture canvas at 30 FPS
+    const canvasStream = canvas.captureStream(30);
+
+    // Capture audio track
+    let audioTrack: MediaStreamTrack | null = null;
+    try {
+      // @ts-ignore
+      const fileStream = video.captureStream ? video.captureStream() : (video.mozCaptureStream ? video.mozCaptureStream() : null);
+      if (fileStream) {
+        audioTrack = fileStream.getAudioTracks()[0] || null;
+      }
+    } catch (e) {
+      console.warn('Could not capture original audio track:', e);
+    }
+
+    const outputStream = new MediaStream();
+    canvasStream.getVideoTracks().forEach(track => outputStream.addTrack(track));
+    if (audioTrack) {
+      outputStream.addTrack(audioTrack);
+    }
+
+    const options = { mimeType: 'video/webm;codecs=vp9,opus' };
+    let mediaRecorder: MediaRecorder;
+    try {
+      mediaRecorder = new MediaRecorder(outputStream, options);
+    } catch (e) {
+      mediaRecorder = new MediaRecorder(outputStream);
+    }
+
+    const chunks: Blob[] = [];
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    const recordPromise = new Promise<Blob>((resolve) => {
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        resolve(blob);
+      };
+    });
+
+    mediaRecorder.start();
+    video.play();
+
+    // Render fast by speeding up playback rate
+    video.playbackRate = 2.0;
+
+    const drawFrame = () => {
+      if (video.paused || video.ended) return;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const currTime = video.currentTime;
+      const activeSeg = segments.find(seg => currTime >= seg.start && currTime <= seg.end);
+
+      if (activeSeg) {
+        const fontSize = Math.max(14, Math.round(canvas.height * 0.055));
+        ctx.font = `bold ${fontSize}px "Outfit", sans-serif`;
+        
+        const text = activeSeg.text;
+        const metrics = ctx.measureText(text);
+        const textWidth = metrics.width;
+        
+        const paddingX = 14;
+        const paddingY = 8;
+        const bgW = textWidth + paddingX * 2;
+        const bgH = fontSize + paddingY * 2;
+        const bgX = (canvas.width - bgW) / 2;
+        const bgY = canvas.height - bgH - Math.round(canvas.height * 0.08);
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(bgX, bgY, bgW, bgH, 8);
+        } else {
+          ctx.rect(bgX, bgY, bgW, bgH);
+        }
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(text, canvas.width / 2, bgY + paddingY);
+      }
+
+      setVideoProgress(Math.min(99, Math.round((video.currentTime / video.duration) * 100)));
+      requestAnimationFrame(drawFrame);
+    };
+
+    video.onplay = () => {
+      drawFrame();
+    };
+
+    await new Promise<void>((resolve) => {
+      video.onended = () => {
+        mediaRecorder.stop();
+        resolve();
+      };
+    });
+
+    const recordedBlob = await recordPromise;
+    setVideoProgress(100);
+    setIsProcessingVideo(false);
+    
+    const url = URL.createObjectURL(recordedBlob);
+    setProcessedVideoUrl(url);
+  };
+
   // Handle Audio Translation
   const handleAudioTranslate = async () => {
     const file = audioFile as unknown as File;
@@ -63,6 +245,7 @@ export const TranslationCenter: React.FC = () => {
 
     setAudioTranscript('');
     setAudioSubtitles('');
+    setProcessedVideoUrl(null);
 
     try {
       const result = await translateAudio(file, {
@@ -71,6 +254,15 @@ export const TranslationCenter: React.FC = () => {
       });
       setAudioTranscript(result.transcript);
       setAudioSubtitles(result.subtitles);
+
+      const isVideo = file.type.startsWith('video/') || file.name.endsWith('.mp4');
+      if (isVideo) {
+        if (burnSubtitles) {
+          await processVideoWithSubtitles(file, result.subtitles);
+        } else {
+          setProcessedVideoUrl(URL.createObjectURL(file));
+        }
+      }
     } catch (e: any) {
       alert(e.message || 'Audio translation failed.');
     }
@@ -83,6 +275,7 @@ export const TranslationCenter: React.FC = () => {
     setAudioFile(file as any);
     setAudioTranscript('');
     setAudioSubtitles('');
+    setProcessedVideoUrl(null);
   };
 
   // Download subtitles or transcript
@@ -97,6 +290,12 @@ export const TranslationCenter: React.FC = () => {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+
+
+  const isVideoFile = audioFile && (
+    (audioFile as unknown as File).type.startsWith('video/') || 
+    (audioFile as unknown as File).name.endsWith('.mp4')
+  );
 
   return (
     <div className="space-y-8">
@@ -289,18 +488,41 @@ export const TranslationCenter: React.FC = () => {
                   <option value="Burmese">Burmese</option>
                 </select>
               </div>
+
+              {/* Burn Subtitles Switch (Rendered conditionally for video files only) */}
+              {isVideoFile && (
+                <div className="flex flex-col gap-1.5 p-3.5 bg-surface-variant/20 rounded-2xl border border-outline/10">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-on-surface">Burn Subtitles into Video</span>
+                      <p className="text-[10px] text-outline mt-0.5">Hardcode the translated subtitles onto the video file</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={burnSubtitles}
+                        onChange={(e) => setBurnSubtitles(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-outline/30 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
 
             <button
               onClick={handleAudioTranslate}
-              disabled={!audioFile || audioLoading || !isGeminiConfigured()}
+              disabled={!audioFile || audioLoading || isProcessingVideo || !isGeminiConfigured()}
               className="w-full mt-8 py-3.5 bg-primary text-on-primary hover:bg-primary/95 disabled:opacity-50 rounded-full font-semibold transition text-sm flex items-center justify-center gap-2 shadow-sm"
             >
-              {audioLoading ? (
+              {audioLoading || isProcessingVideo ? (
                 <>
                   <RefreshCw size={16} className="animate-spin" />
-                  Transcribing & Translating...
+                  {isProcessingVideo ? `Burning Subtitles... ${videoProgress}%` : 'Transcribing & Translating...'}
                 </>
+              ) : isVideoFile ? (
+                'Process Video & Subtitles'
               ) : (
                 'Generate Transcript & Subtitles'
               )}
@@ -312,11 +534,19 @@ export const TranslationCenter: React.FC = () => {
             <div className="space-y-4">
               <span className="text-xs font-bold text-outline uppercase">Output Files</span>
               
-              {audioLoading ? (
+              {audioLoading || isProcessingVideo ? (
                 <div className="flex flex-col items-center justify-center py-20 gap-3 text-outline">
                   <RefreshCw className="animate-spin text-primary" size={28} />
-                  <span>Processing audio file... {audioProgress}%</span>
-                  <p className="text-[10px] max-w-xs text-center">Gemini is transcribing speech and aligning timestamps.</p>
+                  <span>
+                    {isProcessingVideo 
+                      ? `Burning subtitles into video... ${videoProgress}%` 
+                      : `Processing audio file... ${audioProgress}%`}
+                  </span>
+                  <p className="text-[10px] max-w-xs text-center text-outline/85">
+                    {isProcessingVideo 
+                      ? 'Rendering video frames and drawing subtitle overlays in fast-forward.' 
+                      : 'Gemini is transcribing speech and aligning timestamps.'}
+                  </p>
                 </div>
               ) : audioTranscript ? (
                 <div className="space-y-4">
@@ -355,10 +585,33 @@ export const TranslationCenter: React.FC = () => {
                     </div>
                   )}
 
+                  {/* Processed Video box */}
+                  {processedVideoUrl && (
+                    <div className="bg-surface border border-outline/10 p-4 rounded-2xl space-y-3">
+                      <div className="flex justify-between items-center">
+                        <p className="text-xs font-bold text-primary uppercase">Processed Video</p>
+                        <a
+                          href={processedVideoUrl}
+                          download={burnSubtitles ? 'processed_video.webm' : (audioFile as unknown as File).name}
+                          className="text-xs font-semibold text-primary hover:underline flex items-center gap-1"
+                        >
+                          <Download size={12} /> Download Video (MP4)
+                        </a>
+                      </div>
+                      <div className="rounded-xl overflow-hidden border border-outline/10 bg-black shadow-inner">
+                        <video
+                          src={processedVideoUrl}
+                          controls
+                          className="w-full max-h-64 object-contain"
+                        />
+                      </div>
+                    </div>
+                  )}
+
                 </div>
               ) : (
                 <div className="py-20 text-center text-outline italic text-sm">
-                  Upload an audio file and click translate.
+                  Upload an audio/video file and click translate.
                 </div>
               )}
             </div>
