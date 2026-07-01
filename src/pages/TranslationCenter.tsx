@@ -30,6 +30,7 @@ export const TranslationCenter: React.FC = () => {
   const [audioTargetLang, setAudioTargetLang] = useState('English');
   const [burnSubtitles, setBurnSubtitles] = useState(false);
   const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
+  const [vttUrl, setVttUrl] = useState<string | null>(null);
   const [isProcessingVideo, setIsProcessingVideo] = useState(false);
   const [videoProgress, setVideoProgress] = useState(0);
 
@@ -39,8 +40,11 @@ export const TranslationCenter: React.FC = () => {
       if (processedVideoUrl) {
         URL.revokeObjectURL(processedVideoUrl);
       }
+      if (vttUrl) {
+        URL.revokeObjectURL(vttUrl);
+      }
     };
-  }, [processedVideoUrl]);
+  }, [processedVideoUrl, vttUrl]);
 
   // Handle Text Translation
   const handleTextTranslate = async () => {
@@ -238,6 +242,12 @@ export const TranslationCenter: React.FC = () => {
     setProcessedVideoUrl(url);
   };
 
+  const convertSrtToVtt = (srtText: string): string => {
+    let vtt = 'WEBVTT\n\n' + srtText;
+    vtt = vtt.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+    return vtt;
+  };
+
   // Handle Audio Translation
   const handleAudioTranslate = async () => {
     const file = audioFile as unknown as File;
@@ -246,6 +256,7 @@ export const TranslationCenter: React.FC = () => {
     setAudioTranscript('');
     setAudioSubtitles('');
     setProcessedVideoUrl(null);
+    setVttUrl(null);
 
     try {
       const result = await translateAudio(file, {
@@ -261,6 +272,10 @@ export const TranslationCenter: React.FC = () => {
           await processVideoWithSubtitles(file, result.subtitles);
         } else {
           setProcessedVideoUrl(URL.createObjectURL(file));
+          // Convert SRT to WebVTT for soft subtitle track
+          const vttContent = convertSrtToVtt(result.subtitles);
+          const vttBlob = new Blob([vttContent], { type: 'text/vtt' });
+          setVttUrl(URL.createObjectURL(vttBlob));
         }
       }
     } catch (e: any) {
@@ -276,6 +291,7 @@ export const TranslationCenter: React.FC = () => {
     setAudioTranscript('');
     setAudioSubtitles('');
     setProcessedVideoUrl(null);
+    setVttUrl(null);
   };
 
   // Download subtitles or transcript
@@ -494,8 +510,8 @@ export const TranslationCenter: React.FC = () => {
                 <div className="flex flex-col gap-1.5 p-3.5 bg-surface-variant/20 rounded-2xl border border-outline/10">
                   <div className="flex items-center justify-between">
                     <div>
-                      <span className="text-xs font-bold text-on-surface">Burn Subtitles into Video</span>
-                      <p className="text-[10px] text-outline mt-0.5">Hardcode the translated subtitles onto the video file</p>
+                      <span className="text-xs font-bold text-on-surface">Hardcode Subtitles into Video</span>
+                      <p className="text-[10px] text-outline mt-0.5">Permanently burn the translated subtitles onto the video frames</p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer select-none">
                       <input
@@ -600,10 +616,26 @@ export const TranslationCenter: React.FC = () => {
                       </div>
                       <div className="rounded-xl overflow-hidden border border-outline/10 bg-black shadow-inner">
                         <video
+                          key={processedVideoUrl + (vttUrl || '')} // Force player refresh when url changes
                           src={processedVideoUrl}
                           controls
                           className="w-full max-h-64 object-contain"
-                        />
+                        >
+                          {!burnSubtitles && vttUrl && (
+                            <track
+                              kind="subtitles"
+                              src={vttUrl}
+                              srcLang={
+                                audioTargetLang === 'Burmese' ? 'my' :
+                                audioTargetLang === 'Spanish' ? 'es' :
+                                audioTargetLang === 'Vietnamese' ? 'vi' :
+                                audioTargetLang === 'Thai' ? 'th' : 'en'
+                              }
+                              label={audioTargetLang}
+                              default
+                            />
+                          )}
+                        </video>
                       </div>
                     </div>
                   )}
