@@ -23,8 +23,8 @@ export const useAiTranslation = () => {
   };
 
   const isGeminiConfigured = (): boolean => {
-    // The key is stored securely in the Supabase backend
-    return !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+    // Always return true so the UI buttons remain enabled. The actual API key is managed securely on the backend.
+    return true;
   };
 
   // 1. Translate Plain Text
