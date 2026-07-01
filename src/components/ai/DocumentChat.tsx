@@ -22,8 +22,13 @@ export const DocumentChat: React.FC<DocumentChatProps> = ({ documentText, docume
   const [loading, setLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  const getApiKey = (): string => {
-    return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
+  const getFunctionUrl = (): string => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+    return `${supabaseUrl}/functions/v1/gemini-proxy`;
+  };
+
+  const getAnonKey = (): string => {
+    return import.meta.env.VITE_SUPABASE_ANON_KEY || '';
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -34,19 +39,6 @@ export const DocumentChat: React.FC<DocumentChatProps> = ({ documentText, docume
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setInputValue('');
     setLoading(true);
-
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      setMessages(prev => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Error: Gemini API Key is not configured. Please add it in Settings.',
-        },
-      ]);
-      setLoading(false);
-      return;
-    }
 
     const contextPrompt = `
       You are a helpful AI document assistant. You have access to the document "${documentName}".
@@ -79,20 +71,31 @@ export const DocumentChat: React.FC<DocumentChatProps> = ({ documentText, docume
     });
 
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
+      // Standard HTTP fetch call to bypass supabase-js client auth headers that cause Kong 404 errors
+      const response = await fetch(getFunctionUrl(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': getAnonKey(),
+        },
+        body: JSON.stringify({
+          action: 'chat',
+          payload: {
+            contents,
           },
-          body: JSON.stringify({ contents }),
-        }
-      );
+        }),
+      });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || 'Gemini call failed.');
+        let errMsg = 'Edge Function call failed.';
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } catch {
+          const errText = await response.text();
+          errMsg = errText || errMsg;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await response.json();

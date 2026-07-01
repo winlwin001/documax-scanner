@@ -13,22 +13,22 @@ export const useAiTranslation = () => {
   const [progress, setProgress] = useState(0);
   const { incrementUsage, checkLimit } = useSubscription();
 
-  // Retrieve Gemini API Key from environment or localStorage (saves key securely on client)
-  const getApiKey = (): string => {
-    return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
+  const getFunctionUrl = (): string => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+    return `${supabaseUrl}/functions/v1/gemini-proxy`;
+  };
+
+  const getAnonKey = (): string => {
+    return import.meta.env.VITE_SUPABASE_ANON_KEY || '';
   };
 
   const isGeminiConfigured = (): boolean => {
-    return getApiKey() !== '';
+    // The key is stored securely in the Supabase backend
+    return !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
   };
 
   // 1. Translate Plain Text
   const translateText = async (text: string, options: TranslationOptions): Promise<string> => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      throw new Error('Gemini API Key is not configured. Please add it in Settings.');
-    }
-
     if (!checkLimit('ocrRuns')) {
       throw new Error('AI translation monthly limit reached. Please upgrade.');
     }
@@ -60,26 +60,36 @@ export const useAiTranslation = () => {
 
     try {
       setProgress(50);
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+      
+      // Standard HTTP fetch call to bypass supabase-js client auth headers that cause Kong 404 errors
+      const response = await fetch(getFunctionUrl(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': getAnonKey(),
+        },
+        body: JSON.stringify({
+          action: 'translate_text',
+          payload: {
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
               temperature: 0.3,
             },
-          }),
-        }
-      );
+          },
+        }),
+      });
 
       setProgress(80);
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || 'Gemini API call failed.');
+        let errMsg = 'Edge Function call failed.';
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } catch {
+          const errText = await response.text();
+          errMsg = errText || errMsg;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await response.json();
@@ -98,11 +108,6 @@ export const useAiTranslation = () => {
 
   // 2. Multimodal Image Translation
   const translateImage = async (imageBlob: Blob, targetLang: string): Promise<{ translatedText: string; erasedImage: string }> => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      throw new Error('Gemini API Key is not configured. Please add it in Settings.');
-    }
-
     setLoading(true);
     setProgress(20);
 
@@ -131,34 +136,38 @@ export const useAiTranslation = () => {
         Ensure the response is ONLY the raw JSON array, without markdown blocks.
       `;
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  { inlineData: { mimeType: 'image/jpeg', data: base64Content } },
-                  { text: prompt }
-                ]
-              }
-            ],
+      // Standard HTTP fetch call to bypass supabase-js client auth headers that cause Kong 404 errors
+      const response = await fetch(getFunctionUrl(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': getAnonKey(),
+        },
+        body: JSON.stringify({
+          action: 'translate_image',
+          payload: {
+            mimeType: 'image/jpeg',
+            data: base64Content,
+            prompt,
             generationConfig: {
               responseMimeType: 'application/json',
               temperature: 0.1,
             }
-          }),
-        }
-      );
+          },
+        }),
+      });
 
       setProgress(70);
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || 'Gemini Multimodal call failed.');
+        let errMsg = 'Edge Function call failed.';
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } catch {
+          const errText = await response.text();
+          errMsg = errText || errMsg;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await response.json();

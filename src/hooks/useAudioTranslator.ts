@@ -11,19 +11,19 @@ export const useAudioTranslator = () => {
   const [progress, setProgress] = useState(0);
   const { incrementUsage, checkLimit } = useSubscription();
 
-  const getApiKey = (): string => {
-    return import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || '';
+  const getFunctionUrl = (): string => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+    return `${supabaseUrl}/functions/v1/gemini-proxy`;
+  };
+
+  const getAnonKey = (): string => {
+    return import.meta.env.VITE_SUPABASE_ANON_KEY || '';
   };
 
   const translateAudio = async (
     audioFile: File,
     options: AudioTranslationOptions
   ): Promise<{ transcript: string; subtitles: string }> => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      throw new Error('Gemini API Key is not configured. Please add it in Settings.');
-    }
-
     if (!checkLimit('ocrRuns')) {
       throw new Error('AI operations monthly limit reached. Please upgrade.');
     }
@@ -89,34 +89,38 @@ export const useAudioTranslator = () => {
 
       setProgress(65);
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  { inlineData: { mimeType, data: base64Content } },
-                  { text: prompt }
-                ]
-              }
-            ],
+      // Standard HTTP fetch call to bypass supabase-js client auth headers that cause Kong 404 errors
+      const response = await fetch(getFunctionUrl(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': getAnonKey(),
+        },
+        body: JSON.stringify({
+          action: 'translate_audio',
+          payload: {
+            mimeType,
+            data: base64Content,
+            prompt,
             generationConfig: {
               responseMimeType: 'application/json',
               temperature: 0.2,
             }
-          }),
-        }
-      );
+          },
+        }),
+      });
 
       setProgress(85);
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || 'Gemini Audio transcription failed.');
+        let errMsg = 'Edge Function call failed.';
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errMsg;
+        } catch {
+          const errText = await response.text();
+          errMsg = errText || errMsg;
+        }
+        throw new Error(errMsg);
       }
 
       const data = await response.json();
