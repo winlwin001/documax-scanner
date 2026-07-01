@@ -1,3 +1,5 @@
+import { GoogleGenAI } from "npm:@google/genai";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -5,69 +7,32 @@ const corsHeaders = {
 
 let hasLoggedModels = false;
 
-async function listAndLogModels(apiKey: string) {
+async function listAndLogModels(ai: any) {
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`
-    );
-    if (response.ok) {
-      const data = await response.json();
-      console.log("=== [DEVELOPMENT ONLY] Available Gemini Models ===");
-      if (data.models) {
-        data.models.forEach((m: any) => {
-          console.log(`- ${m.name} (Supported: ${m.supportedGenerationMethods?.join(", ")})`);
-        });
-      } else {
-        console.log("No models returned in list.");
-      }
-      console.log("==================================================");
-    } else {
-      console.error(`Failed to list models: ${response.statusText}`);
+    const response = await ai.models.list();
+    console.log("=== [DEVELOPMENT ONLY] Available Gemini Models ===");
+    for (const m of response) {
+      console.log(`- ${m.name} (Supported: ${m.supportedGenerationMethods?.join(", ")})`);
     }
+    console.log("==================================================");
   } catch (err: any) {
     console.error(`Error listing models: ${err.message}`);
   }
 }
 
-async function callGeminiWithFallback(
-  primaryModel: string,
-  fallbackModel: string,
-  apiKey: string,
-  requestBody: any
-): Promise<Response> {
-  const primaryUrl = `https://generativelanguage.googleapis.com/v1/models/${primaryModel}:generateContent?key=${apiKey}`;
-  
-  console.log(`Attempting Gemini request with primary model: ${primaryModel}`);
-  
-  let response = await fetch(primaryUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  // If primary model fails with 404 (Not Found), try fallback model
-  if (response.status === 404) {
-    console.warn(`Primary model ${primaryModel} returned 404. Attempting fallback model: ${fallbackModel}`);
-    const fallbackUrl = `https://generativelanguage.googleapis.com/v1/models/${fallbackModel}:generateContent?key=${apiKey}`;
-    
-    response = await fetch(fallbackUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (response.ok) {
-      console.log(`Successfully recovered using fallback model: ${fallbackModel}`);
-    } else {
-      console.error(`Fallback model ${fallbackModel} also failed with status: ${response.status}`);
-    }
+async function generateContentWithFallback(
+  ai: any,
+  params: any,
+  fallbackModel: string
+): Promise<any> {
+  try {
+    console.log(`Calling primary model: ${params.model}`);
+    return await ai.models.generateContent(params);
+  } catch (err: any) {
+    console.warn(`Primary model ${params.model} failed: ${err.message}. Trying fallback: ${fallbackModel}`);
+    const fallbackParams = { ...params, model: fallbackModel };
+    return await ai.models.generateContent(fallbackParams);
   }
-
-  return response;
 }
 
 Deno.serve(async (req) => {
@@ -85,36 +50,36 @@ Deno.serve(async (req) => {
       );
     }
 
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
     // List and log models on first request in development
     if (!hasLoggedModels) {
       hasLoggedModels = true;
-      // Run asynchronously so it doesn't block the user's translation request
-      listAndLogModels(GEMINI_API_KEY).catch(console.error);
+      listAndLogModels(ai).catch(console.error);
     }
 
     const { action, payload } = await req.json();
 
-    let requestBody = {};
-    const primaryModel = "gemini-1.5-flash-latest";
-    const fallbackModel = "gemini-1.5-pro-latest";
+    const primaryModel = "gemini-2.5-flash"; // Modern supported production model
+    const fallbackModel = "gemini-2.5-pro";   // High-quality fallback model
+    let responseText = "";
+
+    let params: any = {
+      model: primaryModel,
+      config: payload.generationConfig || {},
+    };
 
     if (action === "translate_text" || action === "chat") {
-      requestBody = {
-        contents: payload.contents,
-        generationConfig: payload.generationConfig || {},
-      };
+      params.contents = payload.contents;
     } else if (action === "translate_image" || action === "translate_audio") {
-      requestBody = {
-        contents: [
-          {
-            parts: [
-              { inlineData: { mimeType: payload.mimeType, data: payload.data } },
-              { text: payload.prompt }
-            ]
-          }
-        ],
-        generationConfig: payload.generationConfig || {},
-      };
+      params.contents = [
+        {
+          parts: [
+            { inlineData: { mimeType: payload.mimeType, data: payload.data } },
+            { text: payload.prompt }
+          ]
+        }
+      ];
     } else {
       return new Response(
         JSON.stringify({ error: "Unsupported action." }),
@@ -123,24 +88,24 @@ Deno.serve(async (req) => {
     }
 
     // Call Gemini with primary model and fallback model
-    const response = await callGeminiWithFallback(
-      primaryModel,
-      fallbackModel,
-      GEMINI_API_KEY,
-      requestBody
-    );
+    const response = await generateContentWithFallback(ai, params, fallbackModel);
+    responseText = response.text || "";
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return new Response(
-        JSON.stringify({ error: `Gemini API error: ${errText}` }),
-        { status: response.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    // Return the response in the same format as before so the frontend doesn't break
+    const mockResponse = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              { text: responseText }
+            ]
+          }
+        }
+      ]
+    };
 
-    const data = await response.json();
     return new Response(
-      JSON.stringify(data),
+      JSON.stringify(mockResponse),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
