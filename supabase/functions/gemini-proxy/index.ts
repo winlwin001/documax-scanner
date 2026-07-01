@@ -23,14 +23,15 @@ Deno.serve(async (req) => {
     let geminiUrl = "";
     let requestBody = {};
 
+    // Using the stable v1 API version for production reliability and model support
     if (action === "translate_text" || action === "chat") {
-      geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+      geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
       requestBody = {
         contents: payload.contents,
         generationConfig: payload.generationConfig || {},
       };
     } else if (action === "translate_image" || action === "translate_audio") {
-      geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+      geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
       requestBody = {
         contents: [
           {
